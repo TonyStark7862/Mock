@@ -1,4 +1,4 @@
-# --- Imports ---
+
 import streamlit as st
 import os
 import io
@@ -69,7 +69,6 @@ os.makedirs(QDRANT_PERSIST_DIR, exist_ok=True)
 os.makedirs(SQL_DB_DIR, exist_ok=True)
 
 # Setup Logging
-# Check if logger already has handlers to prevent duplicate logs in Streamlit reruns
 if not logging.getLogger(__name__).hasHandlers():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -149,15 +148,14 @@ def sanitize_for_name(filename: str, max_len: int = 40) -> str:
 # --- Custom LLM Implementation (Placeholder) ---
 # ==============================================================================
 def abc_response(prompt: str) -> str:
-    # Returns dummy response, prints truncated prompt/response
+    # (Code identical to previous version)
     logger.info(f"MyCustomLLM received prompt (first 100 chars): {prompt[:100]}...")
     response = f"This is a dummy response from MyCustomLLM for the prompt starting with: {prompt[:50]}..."
     logger.info(f"MyCustomLLM generated response (first 100 chars): {response[:100]}...")
     return response
 
 class MyCustomLLM(LLM):
-    # Implements all required LLM methods, calling abc_response
-    # Logs warnings or raises NotImplementedError for streaming methods
+    # (Code identical to previous version)
     def chat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:
         logger.info("MyCustomLLM: chat() called")
         prompt = "\n".join([f"{m.role.value}: {m.content}" for m in messages])
@@ -192,11 +190,10 @@ class MyCustomLLM(LLM):
         return LLMMetadata(model_name=LLM_MODEL_NAME, is_chat_model=True)
 
 # ==============================================================================
-# --- Custom SQL Engine (From Script 2, with minor logging adjustments) ---
+# --- Custom SQL Engine (Includes full prompts) ---
 # ==============================================================================
 class CustomSQLEngine:
-    # (Code from previous version, including __init__, prompts, _get_schema_info,
-    # _clean_sql, _is_safe_sql, _format_results, _execute_sql, _execute_with_retry, query)
+    # Includes full SQL prompts now
     def __init__(
         self, sql_engine: sqlalchemy.engine.Engine, table_name: str,
         llm_callback: Callable[[str], str], table_description: Optional[str] = None,
@@ -206,11 +203,52 @@ class CustomSQLEngine:
         self.llm_callback = llm_callback
         self.table_description = table_description or ""
         self.verbose = verbose
-        self.sql_prompt_template = """[... SQL Prompt Template as defined before ...]""" # Keep full prompt
-        self.sql_fix_prompt = """[... SQL Fix Prompt as defined before ...]""" # Keep full prompt
+        # --- START FULL PROMPTS ---
+        self.sql_prompt_template = """You are an expert SQL query generator for SQLite.
+
+Based on the user's natural language query: "{query_str}"
+
+Generate a SQL query for the following SQL table:
+Table Name: {table_name}
+
+{table_description}
+
+IMPORTANT GUIDELINES FOR SQLITE:
+1. Use double quotes for table and column names if they contain spaces or special characters (usually avoided by cleaning). Stick to standard SQL syntax otherwise. Column names provided are already cleaned.
+2. For string comparisons, use LIKE with % wildcards for partial matches (e.g., `column LIKE '%value%'`). String comparisons are case-sensitive by default unless specified otherwise.
+3. For aggregations (SUM, COUNT, AVG, MIN, MAX), always use GROUP BY for any non-aggregated columns included in the SELECT list.
+4. Handle NULL values explicitly using `IS NULL` or `IS NOT NULL`. Use `COALESCE(column, default_value)` to provide defaults if needed.
+5. Avoid complex joins if possible, as this engine primarily works with single tables derived from CSVs.
+6. For date/time operations, use standard SQLite functions like DATE(), TIME(), DATETIME(), STRFTIME(). Assume date columns are stored in a format SQLite understands (like YYYY-MM-DD HH:MM:SS).
+7. Keep queries simple and direct. Only select columns needed to answer the query. Do not add explanations.
+
+Return ONLY the executable SQL query without any explanation, markdown formatting, or comments.
+Do not enclose the query in backticks or add the word 'sql'.
+Example: SELECT COUNT(*) FROM "{table_name}" WHERE "Some Column" > 10;
+"""
+        self.sql_fix_prompt = """The following SQL query for SQLite failed:
+```sql
+{failed_sql}
+```
+Error message: {error_msg}
+
+Table information:
+Table Name: {table_name}
+{table_description}
+
+Please fix the SQL query to work with SQLite following these guidelines:
+Fix syntax errors (quoting, commas, keywords). Ensure column names match exactly those provided in the description (case-sensitive).
+Replace incompatible functions with SQLite equivalents.
+Simplify the query logic if it seems overly complex or likely caused the error. Check aggregations and GROUP BY clauses.
+Ensure data types in comparisons are appropriate (e.g., don't compare text to numbers directly without casting if necessary).
+Double-check table name correctness: {table_name}
+
+Return ONLY the corrected executable SQL query without any explanation or formatting.
+"""
+        # --- END FULL PROMPTS ---
 
     def _get_schema_info(self) -> str:
-        # (Code from previous version)
+        # (Code identical to previous version)
         try:
             metadata = sqlalchemy.MetaData()
             inspector = sqlalchemy.inspect(self.sql_engine)
@@ -232,7 +270,7 @@ class CustomSQLEngine:
             return f"Error retrieving schema for table {self.table_name}: {e}"
 
     def _clean_sql(self, sql: str) -> str:
-        # (Code from previous version)
+        # (Code identical to previous version)
         sql = re.sub(r'```sql|```', '', sql)
         sql = re.sub(r'^sql\s+', '', sql, flags=re.IGNORECASE)
         sql = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
@@ -240,7 +278,7 @@ class CustomSQLEngine:
         return sql.strip()
 
     def _is_safe_sql(self, sql: str) -> bool:
-        # (Code from previous version)
+        # (Code identical to previous version)
         lower_sql = sql.lower().strip()
         if not lower_sql.startswith('select') and not lower_sql.startswith('with'): return False
         dangerous_keywords = [r'\bdrop\b', r'\bdelete\b', r'\btruncate\b', r'\bupdate\b', r'\binsert\b', r'\balter\b', r'\bcreate\b', r'\breplace\b', r'\bgrant\b', r'\brevoke\b', r'\battach\b', r'\bdetach\b']
@@ -249,7 +287,7 @@ class CustomSQLEngine:
         return True
 
     def _format_results(self, result_df: pd.DataFrame) -> str:
-        # (Code from previous version, including row/col truncation)
+         # (Code identical to previous version)
         if result_df.empty: return "The query returned no results."
         max_rows_to_show, max_cols_to_show = 20, 15
         original_shape = result_df.shape
@@ -271,7 +309,7 @@ class CustomSQLEngine:
         return result_str + markdown_result
 
     def _execute_sql(self, sql: str) -> Tuple[bool, Union[pd.DataFrame, str]]:
-        # (Code from previous version)
+        # (Code identical to previous version)
         try:
             if not self._is_safe_sql(sql): return False, "SQL query failed safety check."
             if self.verbose: logger.info(f"Executing safe SQL: {sql}")
@@ -281,7 +319,7 @@ class CustomSQLEngine:
         except Exception as e: return False, f"General Error executing SQL: {e}"
 
     def _execute_with_retry(self, sql: str, max_retries: int = 1) -> Tuple[bool, Union[pd.DataFrame, str], str]:
-         # (Code from previous version)
+        # (Code identical to previous version)
         current_sql, original_sql = sql, sql
         for attempt in range(max_retries + 1):
             if self.verbose: logger.info(f"SQL Exec Attempt {attempt+1}/{max_retries+1}")
@@ -307,10 +345,10 @@ class CustomSQLEngine:
             except Exception as fix_error:
                 logger.error(f"LLM fix error: {fix_error}", exc_info=True)
                 return False, f"SQL failed: {error_message} (LLM fix error: {fix_error})", original_sql
-        return False, "Unexpected SQL retry loop error", original_sql # Should not be reached
+        return False, "Unexpected SQL retry loop error", original_sql
 
     def query(self, query_text: str) -> str:
-        # (Code from previous version, using helper methods)
+        # (Code identical to previous version)
         if self.verbose: logger.info(f"Custom SQL Engine Query: {query_text} on {self.table_name}")
         try:
             schema_info = self._get_schema_info();
@@ -322,15 +360,15 @@ class CustomSQLEngine:
             if not sql_query: return "Error: LLM failed to generate SQL."
             if self.verbose: logger.info(f"Generated SQL: {sql_query}")
             success, result, final_sql = self._execute_with_retry(sql_query)
-            if not success: return f"Error querying table '{self.table_name}':\n{result}\nSQL attempted:\n```sql\n{final_sql}\n```" # result is error string
-            formatted_results = self._format_results(result) # result is DataFrame
-            return f"Query result from table '{self.table_name}':\n\n{formatted_results}" # Simplified response
+            if not success: return f"Error querying table '{self.table_name}':\n{result}\nSQL attempted:\n```sql\n{final_sql}\n```"
+            formatted_results = self._format_results(result)
+            return f"Query result from table '{self.table_name}':\n\n{formatted_results}"
         except Exception as e:
             logger.error(f"Unexpected error in CustomSQLEngine query: {e}", exc_info=True)
             return f"Unexpected error querying table '{self.table_name}': {e}"
 
 # ==============================================================================
-# --- Custom SQL Engine Wrapper (with fixes) ---
+# --- Custom SQL Engine Wrapper (with fixes, commented super init) ---
 # ==============================================================================
 class CustomSQLQueryEngineWrapper(BaseQueryEngine):
     """Adapter to make CustomSQLEngine compatible with LlamaIndex tools."""
@@ -338,12 +376,13 @@ class CustomSQLQueryEngineWrapper(BaseQueryEngine):
         self._engine = engine
         self._llm = llm or Settings.llm
         if not self._llm: raise ValueError("LLM must be available via argument or Settings")
-        # Initialize base class - simplest version first
-        super().__init__(callback_manager=None) # Pass callback_manager=None
+        # --- SUPER INIT COMMENTED OUT AS REQUESTED ---
+        # super().__init__() # Try simplest init first
+        # --- END COMMENT ---
 
     @property
     def callback_manager(self) -> CallbackManager:
-         # Explicitly provide callback_manager property
+         # Explicitly provide callback_manager property to satisfy interface
          return getattr(Settings, "callback_manager", CallbackManager([]))
 
     @property
@@ -351,8 +390,6 @@ class CustomSQLQueryEngineWrapper(BaseQueryEngine):
 
     @property
     def synthesizer(self) -> BaseSynthesizer:
-         # Using NO_TEXT as _query returns the final string intended for display.
-         # SubQuestionQueryEngine will handle the overall synthesis.
          return get_response_synthesizer(llm=self._llm, response_mode=ResponseMode.NO_TEXT)
 
     def _get_prompt_modules(self) -> Dict[str, Any]: return {}
@@ -361,8 +398,7 @@ class CustomSQLQueryEngineWrapper(BaseQueryEngine):
         logger.info(f"CustomSQLWrapper: _query for table {self._engine.table_name}")
         query_text = query_bundle.query_str
         result_str = self._engine.query(query_text) # Gets formatted string result
-        # Wrap in Response object as potentially expected by SubQuestionQueryEngine synthesizer
-        return Response(response=result_str)
+        return Response(response=result_str) # Wrap in Response object
 
     async def _aquery(self, query_bundle: QueryBundle) -> Response: # Return Response object
         logger.info(f"CustomSQLWrapper: _aquery for table {self._engine.table_name} - using sync")
@@ -376,12 +412,13 @@ class CustomSQLQueryEngineWrapper(BaseQueryEngine):
 # ==============================================================================
 @st.cache_resource
 def get_llm():
+    # (Code identical to previous version)
     logger.info("Initializing Custom LLM (cached)...")
     return MyCustomLLM()
 
 @st.cache_resource
 def get_embed_model():
-    # (Code from previous version)
+    # (Code identical to previous version)
     logger.info(f"Initializing Embedding Model (cached): {EMBEDDING_MODEL_NAME}")
     try:
         embed_model = HuggingFaceEmbedding(model_name=EMBEDDING_MODEL_NAME)
@@ -390,100 +427,69 @@ def get_embed_model():
         if actual_dim != EXPECTED_EMBEDDING_DIM: raise ValueError(f"Embed dim mismatch! Expected {EXPECTED_EMBEDDING_DIM}, Got {actual_dim}.")
         logger.info(f"Embedding model loaded. Dim: {actual_dim}")
         return embed_model
-    except Exception as e:
-        logger.error(f"FATAL: Failed embed model init: {e}", exc_info=True)
-        st.error(f"Embedding model failed: {e}")
-        return None
+    except Exception as e: logger.error(f"FATAL: Failed embed model init: {e}", exc_info=True); st.error(f"Embedding model failed: {e}"); return None
 
 @st.cache_resource
 def get_qdrant_client() -> Optional[qdrant_client.QdrantClient]:
-    # (Code from previous version)
+    # (Code identical to previous version)
     logger.info(f"Initializing Qdrant client (cached): {QDRANT_PERSIST_DIR}")
     try:
         client = qdrant_client.QdrantClient(path=QDRANT_PERSIST_DIR)
-        client.get_collections()
-        logger.info("Qdrant client initialized.")
+        client.get_collections(); logger.info("Qdrant client initialized.")
         return client
-    except Exception as e:
-        logger.error(f"FATAL: Failed Qdrant client init: {e}", exc_info=True)
-        st.error(f"Qdrant vector DB failed: {e}. PDF analysis unavailable.")
-        return None
+    except Exception as e: logger.error(f"FATAL: Failed Qdrant client init: {e}", exc_info=True); st.error(f"Qdrant vector DB failed: {e}. PDF analysis unavailable."); return None
 
 def configure_global_settings() -> bool:
-    # (Code from previous version)
+    # (Code identical to previous version)
     logger.info("Configuring LlamaIndex Global Settings...")
     try:
         llm = get_llm()
         embed_model = get_embed_model()
-        if llm is None or embed_model is None:
-             logger.error("LLM/Embed Model failed init. Cannot configure settings.")
-             return False
+        if llm is None or embed_model is None: logger.error("LLM/Embed Model failed init."); return False
         Settings.llm = llm
         Settings.embed_model = embed_model
         Settings.node_parser = SimpleNodeParser.from_defaults(chunk_size=1024, chunk_overlap=200)
         Settings.num_output = 512
         Settings.context_window = 4096
-        # Optional: Configure global callback manager if needed elsewhere
-        # Settings.callback_manager = CallbackManager([])
+        # Settings.callback_manager = CallbackManager([]) # Optional: configure if needed
         logger.info("Global Settings configured.")
         return True
-    except Exception as e:
-        logger.error(f"Settings config error: {e}", exc_info=True)
-        st.error(f"Core component config failed: {e}")
-        return False
+    except Exception as e: logger.error(f"Settings config error: {e}", exc_info=True); st.error(f"Core component config failed: {e}"); return False
 
 # ==============================================================================
 # --- Data Processing Functions ---
 # ==============================================================================
 def process_pdf(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[Document]:
-    # (Code from previous version)
+    # (Code identical to previous version)
     if not uploaded_file: return None
-    file_name = uploaded_file.name
-    logger.info(f"Processing PDF: {file_name}")
+    file_name = uploaded_file.name; logger.info(f"Processing PDF: {file_name}")
     try:
         with io.BytesIO(uploaded_file.getvalue()) as pdf_stream:
-            reader = PyPDF2.PdfReader(pdf_stream)
-            text_content = ""
-            num_pages = len(reader.pages)
+            reader = PyPDF2.PdfReader(pdf_stream); text_content = ""; num_pages = len(reader.pages)
             for page_num, page in enumerate(reader.pages):
                 try:
                     page_text = page.extract_text()
                     if page_text: text_content += page_text + "\n\n"
                     else: logger.warning(f"No text page {page_num+1}/{num_pages} in '{file_name}'.")
-                except Exception as page_err:
-                    logger.error(f"Page extract error {page_num+1} in '{file_name}': {page_err}", exc_info=True)
-                    text_content += f"[Error page {page_num+1}]\n\n"
-        if not text_content.strip():
-            st.warning(f"No text extracted from PDF '{file_name}'.")
-            return None
+                except Exception as page_err: logger.error(f"Page extract error {page_num+1} in '{file_name}': {page_err}", exc_info=True); text_content += f"[Error page {page_num+1}]\n\n"
+        if not text_content.strip(): st.warning(f"No text extracted from PDF '{file_name}'."); return None
         doc = Document(text=text_content, metadata={"file_name": file_name})
         logger.info(f"Processed PDF '{file_name}'. Length: {len(text_content)}")
         return doc
-    except Exception as e:
-        logger.error(f"PDF process failed '{file_name}': {e}", exc_info=True)
-        st.error(f"Error reading PDF '{file_name}': {e}")
-        return None
+    except Exception as e: logger.error(f"PDF process failed '{file_name}': {e}", exc_info=True); st.error(f"Error reading PDF '{file_name}': {e}"); return None
 
 def process_csv(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> Optional[pd.DataFrame]:
-    # (Code from previous version)
+    # (Code identical to previous version)
     if not uploaded_file: return None
-    file_name = uploaded_file.name
-    logger.info(f"Processing CSV: {file_name}")
+    file_name = uploaded_file.name; logger.info(f"Processing CSV: {file_name}")
     try:
         try: df = pd.read_csv(io.BytesIO(uploaded_file.getvalue()))
-        except UnicodeDecodeError:
-            logger.warning(f"UTF-8 fail '{file_name}', trying latin1.")
-            df = pd.read_csv(io.BytesIO(uploaded_file.getvalue()), encoding='latin1')
+        except UnicodeDecodeError: logger.warning(f"UTF-8 fail '{file_name}', trying latin1."); df = pd.read_csv(io.BytesIO(uploaded_file.getvalue()), encoding='latin1')
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         logger.info(f"Loaded CSV '{file_name}'. Shape: {df.shape}")
-        if df.empty:
-            st.warning(f"CSV '{file_name}' is empty.")
-            return None
+        if df.empty: st.warning(f"CSV '{file_name}' is empty."); return None
         return df
-    except Exception as e:
-        logger.error(f"CSV process failed '{file_name}': {e}", exc_info=True)
-        st.error(f"Error reading CSV '{file_name}': {e}")
-        return None
+    except Exception as e: logger.error(f"CSV process failed '{file_name}': {e}", exc_info=True); st.error(f"Error reading CSV '{file_name}': {e}"); return None
 
 # ==============================================================================
 # --- Tool Creation Functions (Unique per file) ---
@@ -491,7 +497,7 @@ def process_csv(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) ->
 def create_pdf_tool(
     pdf_document: Document, qdrant_client_instance: qdrant_client.QdrantClient
 ) -> Optional[QueryEngineTool]:
-    # (Code from previous version - creates unique collection per PDF)
+    # (Code identical to previous version)
     if not pdf_document or not pdf_document.text.strip(): return None
     if not qdrant_client_instance: return None
     file_name = pdf_document.metadata.get("file_name", f"unknown_pdf_{random.randint(1000,9999)}.pdf")
@@ -500,32 +506,27 @@ def create_pdf_tool(
     tool_name = f"pdf_{sanitized_name}_tool"
     logger.info(f"Creating PDF tool: '{file_name}' (Coll: {collection_name}, Tool: {tool_name})")
     try:
-        try: # Create collection
-             qdrant_client_instance.create_collection( collection_name=collection_name, vectors_config=VectorParams(size=EXPECTED_EMBEDDING_DIM, distance=Distance.COSINE))
-             logger.info(f"Collection '{collection_name}' created.")
-        except Exception as create_exc: # Handle if exists
-             logger.warning(f"Create failed '{collection_name}' (may exist): {create_exc}. Checking...")
+        try: qdrant_client_instance.create_collection( collection_name=collection_name, vectors_config=VectorParams(size=EXPECTED_EMBEDDING_DIM, distance=Distance.COSINE)); logger.info(f"Collection '{collection_name}' created.")
+        except Exception as create_exc: logger.warning(f"Create failed '{collection_name}' (may exist): {create_exc}. Checking...");
              try: qdrant_client_instance.get_collection(collection_name=collection_name); logger.info(f"Collection '{collection_name}' exists.")
              except Exception as get_exc: logger.error(f"Failed ensure collection '{collection_name}': {get_exc}", exc_info=True); st.error(f"Qdrant error '{file_name}': {get_exc}"); return None
-        # Setup storage & index
         vector_store = QdrantVectorStore(client=qdrant_client_instance, collection_name=collection_name)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
         logger.info(f"Indexing doc '{file_name}' into '{collection_name}'...")
-        index = VectorStoreIndex.from_documents([pdf_document], storage_context=storage_context, show_progress=True) # Uses global Settings
+        index = VectorStoreIndex.from_documents([pdf_document], storage_context=storage_context, show_progress=True)
         logger.info("Indexing complete.")
-        pdf_query_engine = index.as_query_engine(similarity_top_k=3, response_mode="compact") # Uses global Settings
+        pdf_query_engine = index.as_query_engine(similarity_top_k=3, response_mode="compact")
         logger.info("Query engine created.")
         tool_description = f"Provides info from PDF document '{file_name}'. Use for text search, summarization, content understanding in this specific file."
         pdf_tool = QueryEngineTool(query_engine=pdf_query_engine, metadata=ToolMetadata(name=tool_name, description=tool_description))
         logger.info(f"PDF tool '{tool_name}' created.")
         return pdf_tool
-    except Exception as e:
-        logger.error(f"PDF tool failed '{file_name}': {e}", exc_info=True); st.error(f"PDF tool setup error '{file_name}': {e}"); return None
+    except Exception as e: logger.error(f"PDF tool failed '{file_name}': {e}", exc_info=True); st.error(f"PDF tool setup error '{file_name}': {e}"); return None
 
 def create_csv_tool(
     df: pd.DataFrame, csv_file_name: str, sql_alchemy_engine: sqlalchemy.engine.Engine
 ) -> Optional[QueryEngineTool]:
-    # (Code from previous version - uses CustomSQLEngine)
+    # (Code identical to previous version)
     if df is None or df.empty: return None
     if not sql_alchemy_engine: return None
     sanitized_base_name = sanitize_for_name(csv_file_name)
@@ -533,28 +534,16 @@ def create_csv_tool(
     tool_name = f"csv_{sanitized_base_name}_tool"
     logger.info(f"Creating CSV tool: '{csv_file_name}' (Table: {table_name}, Tool: {tool_name})")
     try:
-        # Prepare DataFrame (Clean columns)
-        original_columns = df.columns.tolist()
-        cleaned_column_map = {}
-        seen_cleaned_names = set()
+        original_columns = df.columns.tolist(); cleaned_column_map={}; seen_cleaned_names=set()
         for i, col in enumerate(df.columns):
             cleaned_col = re.sub(r'\W+|^(?=\d)', '_', str(col)).lower().strip('_') or f"column_{i}"
-            final_cleaned_col = cleaned_col; suffix = 1
-            while final_cleaned_col in seen_cleaned_names: final_cleaned_col = f"{cleaned_col}_{suffix}"; suffix += 1
+            final_cleaned_col=cleaned_col; suffix=1
+            while final_cleaned_col in seen_cleaned_names: final_cleaned_col=f"{cleaned_col}_{suffix}"; suffix+=1
             seen_cleaned_names.add(final_cleaned_col); cleaned_column_map[col] = final_cleaned_col
-        df_renamed = df.rename(columns=cleaned_column_map)
-        cleaned_columns = df_renamed.columns.tolist()
-        logger.info(f"Cleaned cols: {cleaned_columns}")
-        dtype_mapping = {col: sqlalchemy.types.TEXT for col in df_renamed.select_dtypes(include=['object', 'string']).columns}
-        # Load to SQL
-        logger.info(f"Saving DF {df_renamed.shape} to SQL table '{table_name}'...")
-        df_renamed.to_sql(name=table_name, con=sql_alchemy_engine, index=False, if_exists='replace', chunksize=1000, dtype=dtype_mapping)
-        logger.info("Save complete.")
-        # Generate Description
-        logger.info("Generating table description...")
-        table_desc = generate_table_description(df_renamed, table_name, csv_file_name)
-        logger.info("Description generated.")
-        # Instantiate Custom SQL Engine & Wrapper
+        df_renamed=df.rename(columns=cleaned_column_map); cleaned_columns=df_renamed.columns.tolist(); logger.info(f"Cleaned cols: {cleaned_columns}")
+        dtype_mapping={col: sqlalchemy.types.TEXT for col in df_renamed.select_dtypes(include=['object', 'string']).columns}
+        logger.info(f"Saving DF {df_renamed.shape} to SQL table '{table_name}'..."); df_renamed.to_sql(name=table_name, con=sql_alchemy_engine, index=False, if_exists='replace', chunksize=1000, dtype=dtype_mapping); logger.info("Save complete.")
+        logger.info("Generating table description..."); table_desc = generate_table_description(df_renamed, table_name, csv_file_name); logger.info("Description generated.")
         logger.info("Instantiating CustomSQLEngine...")
         def llm_callback(prompt: str) -> str:
             try:
@@ -562,17 +551,13 @@ def create_csv_tool(
                 return Settings.llm.complete(prompt).text
             except Exception as e: logger.error(f"LLM callback error: {e}", exc_info=True); return f"LLM Error: {e}"
         custom_sql_engine_instance = CustomSQLEngine(sql_engine=sql_alchemy_engine, table_name=table_name, llm_callback=llm_callback, table_description=table_desc, verbose=True)
-        wrapped_engine = CustomSQLQueryEngineWrapper(custom_sql_engine_instance)
-        logger.info("Custom engine wrapped.")
-        # Create Tool
+        wrapped_engine = CustomSQLQueryEngineWrapper(custom_sql_engine_instance); logger.info("Custom engine wrapped.")
         tool_description = f"Queries SQL table '{table_name}' (from CSV '{csv_file_name}'). Use for structured data lookup, filtering, calculations (SUM, COUNT, AVG), aggregation. SQL columns: {', '.join(cleaned_columns)}."
         csv_tool = QueryEngineTool(query_engine=wrapped_engine, metadata=ToolMetadata(name=tool_name, description=tool_description))
         logger.info(f"CSV tool '{tool_name}' created.")
         return csv_tool
-    except sqlalchemy.exc.SQLAlchemyError as db_err:
-        logger.error(f"DB error CSV '{csv_file_name}': {db_err}", exc_info=True); st.error(f"DB error CSV '{csv_file_name}': {db_err}"); return None
-    except Exception as e:
-        logger.error(f"CSV tool failed '{csv_file_name}': {e}", exc_info=True); st.error(f"CSV tool setup error '{csv_file_name}': {e}"); return None
+    except sqlalchemy.exc.SQLAlchemyError as db_err: logger.error(f"DB error CSV '{csv_file_name}': {db_err}", exc_info=True); st.error(f"DB error CSV '{csv_file_name}': {db_err}"); return None
+    except Exception as e: logger.error(f"CSV tool failed '{csv_file_name}': {e}", exc_info=True); st.error(f"CSV tool setup error '{csv_file_name}': {e}"); return None
 
 # ==============================================================================
 # --- Main Engine Setup Function (Uses SubQuestionQueryEngine) ---
@@ -581,122 +566,86 @@ def setup_engine(
     uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile],
     qdrant_client_instance: qdrant_client.QdrantClient
 ) -> Tuple[Optional[SubQuestionQueryEngine], List[str]]:
-    """Processes files, creates tools (1 per file), builds SubQuestionQueryEngine."""
+    # (Code identical to previous version)
     st.info("🚀 Starting engine setup...")
-    start_time = datetime.datetime.now()
-    agent_tools = []
-    processed_filenames = []
-
-    # 1. Configure Global Settings
-    if not configure_global_settings():
-        st.error("Engine setup failed: Core component configuration error.")
-        return None, []
-
-    # 2. Separate Files
+    start_time = datetime.datetime.now(); agent_tools = []; processed_filenames = []
+    if not configure_global_settings(): st.error("Engine setup failed: Core component config error."); return None, []
     pdf_files = [f for f in uploaded_files if f.name.lower().endswith('.pdf')]
     csv_files = [f for f in uploaded_files if f.name.lower().endswith('.csv')]
     logger.info(f"Found {len(pdf_files)} PDF(s) and {len(csv_files)} CSV(s).")
-
-    # 3. Cleanup Resources
+    # Cleanup Resources
     if os.path.exists(SQL_DB_PATH):
-        try: logger.warning(f"Removing existing DB: {SQL_DB_PATH}"); os.remove(SQL_DB_PATH); logger.info("Old DB removed.")
-        except OSError as e: logger.error(f"DB remove error '{SQL_DB_PATH}': {e}", exc_info=True); st.error(f"DB cleanup error: {e}")
+        try: logger.warning(f"Removing DB: {SQL_DB_PATH}"); os.remove(SQL_DB_PATH); logger.info("Old DB removed.")
+        except OSError as e: logger.error(f"DB remove error: {e}", exc_info=True); st.error(f"DB cleanup error: {e}")
     if qdrant_client_instance:
-        logger.warning(f"Cleaning Qdrant collections (prefix '{QDRANT_PDF_COLLECTION_PREFIX}')...")
-        cleaned_count = 0
+        logger.warning(f"Cleaning Qdrant (prefix '{QDRANT_PDF_COLLECTION_PREFIX}')..."); cleaned_count = 0
         try:
             collections = qdrant_client_instance.get_collections().collections
             for collection in collections:
                 if collection.name.startswith(QDRANT_PDF_COLLECTION_PREFIX):
                     logger.info(f"Deleting old Qdrant: {collection.name}")
                     try: qdrant_client_instance.delete_collection(collection_name=collection.name, timeout=60); cleaned_count += 1
-                    except Exception as del_exc: logger.error(f"Failed delete Qdrant '{collection.name}': {del_exc}"); st.warning(f"Could not delete old '{collection.name}'.")
+                    except Exception as del_exc: logger.error(f"Failed delete Qdrant '{collection.name}': {del_exc}"); st.warning(f"Could not delete '{collection.name}'.")
             logger.info(f"Qdrant cleanup finished. Deleted {cleaned_count}.")
         except Exception as list_exc: logger.error(f"Qdrant list fail: {list_exc}", exc_info=True); st.warning("Qdrant cleanup failed.")
     else: logger.warning("Qdrant client unavailable, skipping cleanup.")
-
-    # 4. Process PDFs -> Tools
+    # Process PDFs
     pdf_success_count = 0
     if pdf_files:
-        st.write(f"Processing {len(pdf_files)} PDF(s)...")
-        if not qdrant_client_instance: st.error("Qdrant unavailable for PDFs.")
+        st.write(f"Processing {len(pdf_files)} PDF(s)..."); pdf_progress = st.progress(0.0)
+        if not qdrant_client_instance: st.error("Qdrant unavailable.")
         else:
-            pdf_progress = st.progress(0.0) # Use float for smoother progress
             for i, uploaded_pdf in enumerate(pdf_files):
                 progress_text_pdf = f"PDF: {uploaded_pdf.name} ({i+1}/{len(pdf_files)})..."
                 try:
-                    pdf_progress.progress( (i / len(pdf_files)) + (0.1 / len(pdf_files)) , text=progress_text_pdf) # Small increment
+                    pdf_progress.progress((i / len(pdf_files)) + (0.1 / len(pdf_files)), text=progress_text_pdf)
                     pdf_doc = process_pdf(uploaded_pdf)
                     if pdf_doc:
-                        pdf_progress.progress( (i / len(pdf_files)) + (0.5 / len(pdf_files)) , text=f"Indexing {uploaded_pdf.name}...")
+                        pdf_progress.progress((i / len(pdf_files)) + (0.5 / len(pdf_files)), text=f"Indexing {uploaded_pdf.name}...")
                         pdf_tool = create_pdf_tool(pdf_doc, qdrant_client_instance)
                         if pdf_tool: agent_tools.append(pdf_tool); processed_filenames.append(uploaded_pdf.name); pdf_success_count += 1
                 except Exception as pdf_loop_err: logger.error(f"PDF loop error {uploaded_pdf.name}: {pdf_loop_err}", exc_info=True); st.error(f"Processing {uploaded_pdf.name} failed.")
             pdf_progress.progress(1.0, text="PDF Processing Complete.")
-            # pdf_progress.empty() # Optional: Remove bar after completion
-
-
-    # 5. Process CSVs -> Tools
-    csv_success_count = 0
-    sql_alchemy_engine = None
+    # Process CSVs
+    csv_success_count = 0; sql_alchemy_engine = None
     if csv_files:
-        st.write(f"Processing {len(csv_files)} CSV(s)...")
+        st.write(f"Processing {len(csv_files)} CSV(s)..."); csv_progress = st.progress(0.0)
         try:
-            logger.info(f"Creating SQLAlchemy engine: {SQL_DB_URL}")
-            sql_alchemy_engine = sqlalchemy.create_engine(SQL_DB_URL)
+            logger.info(f"Creating SQLAlchemy engine: {SQL_DB_URL}"); sql_alchemy_engine = sqlalchemy.create_engine(SQL_DB_URL)
             with sql_alchemy_engine.connect() as conn: logger.info("DB Engine connected.")
-
-            csv_progress = st.progress(0.0)
             for i, uploaded_csv in enumerate(csv_files):
                  progress_text_csv = f"CSV: {uploaded_csv.name} ({i+1}/{len(csv_files)})..."
                  try:
-                     csv_progress.progress( (i / len(csv_files)) + (0.1 / len(csv_files)), text=progress_text_csv)
+                     csv_progress.progress((i / len(csv_files)) + (0.1 / len(csv_files)), text=progress_text_csv)
                      csv_df = process_csv(uploaded_csv)
                      if csv_df is not None:
-                         csv_progress.progress( (i / len(csv_files)) + (0.5 / len(csv_files)) , text=f"Creating DB for {uploaded_csv.name}...")
+                         csv_progress.progress((i / len(csv_files)) + (0.5 / len(csv_files)), text=f"Creating DB for {uploaded_csv.name}...")
                          csv_tool = create_csv_tool(csv_df, uploaded_csv.name, sql_alchemy_engine)
                          if csv_tool: agent_tools.append(csv_tool); processed_filenames.append(uploaded_csv.name); csv_success_count += 1
                  except Exception as csv_loop_err: logger.error(f"CSV loop error {uploaded_csv.name}: {csv_loop_err}", exc_info=True); st.error(f"Processing {uploaded_csv.name} failed.")
             csv_progress.progress(1.0, text="CSV Processing Complete.")
-            # csv_progress.empty() # Optional
-
-        except Exception as db_eng_err:
-             logger.error(f"SQLAlchemy engine fail: {db_eng_err}", exc_info=True); st.error(f"DB engine error: {db_eng_err}. CSVs failed."); sql_alchemy_engine = None
-
+        except Exception as db_eng_err: logger.error(f"SQLAlchemy engine fail: {db_eng_err}", exc_info=True); st.error(f"DB engine error: {db_eng_err}."); sql_alchemy_engine = None
     st.write(f"✅ Processing finished: {pdf_success_count} PDF tool(s), {csv_success_count} CSV tool(s).")
-
-    # 6. Check Tools & Build Engine
-    if not agent_tools:
-        st.error("Engine setup failed: No tools created.")
-        return None, []
-
-    st.success(f"Created {len(agent_tools)} tools for: {', '.join(processed_filenames) or 'None'}")
-    logger.info(f"Tools created: {len(agent_tools)}. Files: {processed_filenames}")
-    st.info("Building the main query engine...")
-    logger.info("Creating SubQuestionQueryEngine...")
+    # Build Engine
+    if not agent_tools: st.error("Engine setup failed: No tools created."); return None, []
+    st.success(f"Created {len(agent_tools)} tools for: {', '.join(processed_filenames) or 'None'}"); logger.info(f"Tools created: {len(agent_tools)}. Files: {processed_filenames}")
+    st.info("Building the main query engine..."); logger.info("Creating SubQuestionQueryEngine...")
     try:
         if not Settings.llm: raise ValueError("LLM not in Settings.")
-        final_engine = SubQuestionQueryEngine.from_defaults(
-            query_engine_tools=agent_tools, verbose=True, use_async=False )
-        logger.info("SubQuestionQueryEngine created.")
-        st.success("🎉 Query Engine is ready!")
-        end_time = datetime.datetime.now()
-        st.caption(f"Setup took {(end_time - start_time).total_seconds():.2f}s.")
+        final_engine = SubQuestionQueryEngine.from_defaults(query_engine_tools=agent_tools, verbose=True, use_async=False )
+        logger.info("SubQuestionQueryEngine created."); st.success("🎉 Query Engine is ready!")
+        end_time = datetime.datetime.now(); st.caption(f"Setup took {(end_time - start_time).total_seconds():.2f}s.")
         return final_engine, processed_filenames
-    except Exception as e:
-        logger.error(f"Failed SubQuestionQueryEngine init: {e}", exc_info=True)
-        st.error(f"Query Engine creation failed: {e}")
-        # Return filenames even if engine fails, for context
-        return None, processed_filenames
+    except Exception as e: logger.error(f"Failed SubQuestionQueryEngine init: {e}", exc_info=True); st.error(f"Query Engine creation failed: {e}"); return None, processed_filenames
 
 # ==============================================================================
-# --- Streamlit App UI ---
+# --- Streamlit App UI (Unified - Uses SubQuestionQueryEngine) ---
 # ==============================================================================
 st.set_page_config(page_title="Unified SubQuery Engine - Final", layout="wide")
 st.title("📄📊 Unified PDF & CSV Analysis Engine (SubQuery)")
 st.markdown("""
-Upload PDF and/or CSV files. An engine will be built using one tool per file.
-It uses vector search for PDFs and custom SQL for CSVs, coordinated via sub-questions.
+Upload PDF and/or CSV files. The engine uses vector search for PDFs (one index per PDF)
+and a custom SQL engine for CSVs (one table per CSV), coordinated by a Sub-Question Query Engine.
 **Note:** Uses a dummy LLM - actual query analysis requires replacing `MyCustomLLM`.
 """)
 
@@ -723,12 +672,12 @@ with st.sidebar:
         st.session_state.processed_filenames = []
         st.session_state.processing_complete = False
         st.session_state.initial_message_shown = False # Reset flag
-
         if uploaded_files:
-            engine_instance, processed_names = setup_engine(uploaded_files, qdrant_client_instance)
+            with st.spinner("Processing files and building engine... Please wait."): # Add spinner for processing
+                engine_instance, processed_names = setup_engine(uploaded_files, qdrant_client_instance)
             st.session_state.query_engine = engine_instance
             st.session_state.processed_filenames = processed_names # Store filenames from setup
-            st.session_state.processing_complete = True # Mark as done
+            st.session_state.processing_complete = True # Mark as done (attempted at least)
             if engine_instance is None: logger.error("Engine setup returned None.")
             else: logger.info("Engine created and stored.")
         else: st.warning("Please upload files.")
@@ -736,7 +685,14 @@ with st.sidebar:
     # --- Config Info ---
     st.sidebar.divider()
     st.sidebar.header("Configuration Info")
-    # ...(Display config details as before)...
+    st.sidebar.info(f"LLM: {LLM_MODEL_NAME} (Custom Dummy)")
+    st.sidebar.info(f"Embedding: {EMBEDDING_MODEL_NAME}")
+    if qdrant_client_instance:
+        st.sidebar.info(f"Vector Store: Qdrant (Prefix: {QDRANT_PDF_COLLECTION_PREFIX})")
+        st.sidebar.caption(f"Qdrant Path: {os.path.abspath(QDRANT_PERSIST_DIR)}")
+    else: st.sidebar.warning("Vector Store: Qdrant Client Failed!")
+    st.sidebar.info(f"CSV DB: SQLite ({SQL_DB_FILENAME})")
+    st.sidebar.caption(f"DB Path: {os.path.abspath(SQL_DB_PATH)}")
 
 # --- Main Chat Area ---
 st.header("💬 Chat with the Engine")
@@ -752,11 +708,14 @@ if processing_done and final_engine and not initial_message_shown_flag:
         greeting_msg = f"Hello! I've processed the following {len(processed_files_list)} file(s): `{', '.join(processed_files_list)}`.\n\n"
         if len(processed_files_list) > 2:
             greeting_msg += "**Tip:** Since multiple files are loaded, asking questions that mention specific filenames helps me answer faster and more accurately. For example:\n"
-            example_pdf = next((f for f in processed_files_list if f.lower().endswith('.pdf')), None)
-            example_csv = next((f for f in processed_files_list if f.lower().endswith('.csv')), None)
-            if example_pdf: greeting_msg += f"- 'Summarize `{example_pdf}`'\n"
-            if example_csv: greeting_msg += f"- 'What is the total revenue in `{example_csv}`?'\n"
-            if example_pdf and example_csv: greeting_msg += f"- 'Compare findings in `{example_pdf}` with data in `{example_csv}` using `[common topic/column]`'\n"
+            example_pdf = next((f for f in processed_files_list if f.lower().endswith('.pdf')), '[filename.pdf]') # Placeholder if none
+            example_csv = next((f for f in processed_files_list if f.lower().endswith('.csv')), '[data.csv]') # Placeholder if none
+            file1_example = processed_files_list[0] if processed_files_list else '[file1.pdf]'
+            file2_example = processed_files_list[1] if len(processed_files_list) > 1 else '[file2.csv]'
+            # Add examples
+            greeting_msg += f"- 'Summarize `{example_pdf}`'\n"
+            greeting_msg += f"- 'What is the total revenue in `{example_csv}`?'\n"
+            greeting_msg += f"- 'Compare findings in `{file1_example}` with data in `{file2_example}` using `[common topic/column]`'\n" # Comparison example
             greeting_msg += "\n"
         greeting_msg += "How can I help you analyze these documents?"
         st.markdown(greeting_msg)
@@ -780,29 +739,23 @@ if prompt := st.chat_input("Ask a question about the uploaded files...", key="un
 
     # Assistant Response Area
     with st.chat_message("assistant"):
-        info_message_placeholder = st.empty() # For pre-check info
-        final_response_placeholder = st.empty() # For actual response
+        info_message_placeholder = st.empty()
+        final_response_placeholder = st.empty()
         full_assistant_response_for_history = ""
 
         with st.spinner("Thinking... 🤔"):
             pre_check_info_msg = ""
-            # Step 10: Pre-Processing LLM Check (Enhanced)
+            # Step 10: Pre-Processing LLM Check
             try:
-                if final_engine: # Ensure engine exists
-                    num_tools = 0
-                    # Safely get tool count - check if attribute exists first
-                    if hasattr(final_engine, 'query_engine_tools'):
-                         num_tools = len(final_engine.query_engine_tools)
-                    else:
-                         logger.warning("Cannot determine tool count from engine object.")
-
+                if final_engine and Settings.llm:
+                    num_tools = len(getattr(final_engine, 'query_engine_tools', [])) # Safely get tool count
                     current_filenames = st.session_state.get('processed_filenames', [])
                     example_pdf = next((f for f in current_filenames if f.lower().endswith('.pdf')), '[filename.pdf]')
                     example_csv = next((f for f in current_filenames if f.lower().endswith('.csv')), '[data.csv]')
                     file1_example = current_filenames[0] if current_filenames else '[file1.pdf]'
                     file2_example = current_filenames[1] if len(current_filenames) > 1 else '[file2.csv]'
 
-                    # Construct the enhanced check prompt
+                    # Construct the enhanced check prompt for the LLM
                     special_check_prompt = f"""Analyze the user query provided below based on the available files.
 
 User Query:
@@ -824,25 +777,26 @@ Determine Warning Rules:
 
 Response Rules:
 - If Rule 1 applies (and Rule 2 does not), respond ONLY with: "INFO: Your query seems general. Processing across all {len(current_filenames)} files might take longer. For focused results next time, try specifying files (e.g., 'Summarize `{example_pdf}`' or 'Show data for `{example_csv}`'). I will now proceed with your general query..."
-- If Rule 2 applies (and Rule 1 does not), respond ONLY with: "INFO: Your comparison query doesn't specify how to link the data (e.g., by date, ID). I'll attempt the comparison, but for a more precise result next time, please include the linking factor (e.g., 'Compare `{file1_example}` and `{file2_example}` for `[linking_factor]`). Proceeding with your query now..."
+- If Rule 2 applies (and Rule 1 does not), respond ONLY with: "INFO: Your comparison query doesn't specify how to link the data (e.g., by date, ID). I'll attempt the comparison based on the content, but for a more precise result next time, please include the linking factor (e.g., 'Compare `{file1_example}` and `{file2_example}` for `[linking_factor]`). Proceeding with your query now..."
 - If BOTH Rule 1 and Rule 2 apply, respond ONLY with: "INFO: Your query is general and the comparison basis is unclear. Processing across all {len(current_filenames)} files and attempting comparison may take longer and yield limited results. Please specify filenames and a linking factor next time for better results. Proceeding with your query now..."
 - If NEITHER Rule 1 nor Rule 2 apply, respond ONLY with the exact text: "OK"
 """
-                    if Settings.llm:
-                        logger.info("Performing pre-query check with LLM...")
-                        check_response = Settings.llm.complete(special_check_prompt)
-                        check_response_text = check_response.text
+                    logger.info("Performing pre-query check with LLM...")
+                    check_response = Settings.llm.complete(special_check_prompt)
+                    check_response_text = check_response.text
 
-                        # Handle Dummy LLM response explicitly for testing flow
-                        if "This is a dummy response" in check_response_text:
-                            logger.warning("Pre-check LLM is a dummy, simulating 'OK'.")
-                            check_response_text = "OK" # Treat dummy as OK
+                    # Handle Dummy LLM response explicitly for testing flow
+                    if "This is a dummy response" in check_response_text:
+                        logger.warning("Pre-check LLM is a dummy, simulating 'OK'.")
+                        check_response_text = "OK" # Treat dummy as OK
 
-                        if check_response_text != "OK" and check_response_text:
-                             pre_check_info_msg = check_response_text # Store the actual helpful message
-                             info_message_placeholder.info(pre_check_info_msg) # Display immediately
-                             full_assistant_response_for_history += pre_check_info_msg + "\n\n"
-                    else: logger.warning("LLM not available for pre-query check.")
+                    if check_response_text != "OK" and check_response_text:
+                         pre_check_info_msg = check_response_text
+                         info_message_placeholder.info(pre_check_info_msg) # Display immediately
+                         full_assistant_response_for_history += pre_check_info_msg + "\n\n"
+                else:
+                    logger.warning("Engine or LLM not available for pre-query check.")
+
             except Exception as pre_check_err: logger.error(f"Pre-query check error: {pre_check_err}", exc_info=True)
 
             # Step 12: Execute Main Engine
@@ -850,26 +804,23 @@ Response Rules:
             try:
                 if final_engine:
                     logger.info(f"--- Querying SubQuestionQueryEngine: {prompt} ---")
-                    response_obj = final_engine.query(prompt)
-                    # Check if response_obj is None or has response attribute before str()
-                    if response_obj is not None and hasattr(response_obj, 'response'):
-                         final_engine_response_str = str(response_obj.response) # Extract from Response object if needed
-                    elif response_obj is not None:
-                         final_engine_response_str = str(response_obj) # Assume it might be string directly
-                    else:
-                         final_engine_response_str = "Engine returned no response."
+                    response_obj = final_engine.query(prompt) # Pass original prompt
+                    # Handle potential Response object or direct string
+                    if hasattr(response_obj, 'response') and isinstance(response_obj.response, str):
+                        final_engine_response_str = response_obj.response
+                    elif isinstance(response_obj, str):
+                         final_engine_response_str = response_obj
+                    elif response_obj is not None: # Fallback for other types
+                         final_engine_response_str = str(response_obj)
+                    else: final_engine_response_str = "Engine returned no response."
                     logger.info(f"--- SubQuestionQueryEngine response received ---")
-                else: final_engine_response_str = "Error: Query engine not available."
+                else: final_engine_response_str = "Error: Query engine is not available."
             except Exception as query_err:
                 logger.error(f"Engine query error: {query_err}", exc_info=True)
                 final_engine_response_str = f"Sorry, an error occurred: {query_err}"
-                # Display error in placeholder immediately if needed
-                final_response_placeholder.error(final_engine_response_str)
 
-
-        # Display final response (if not already displayed as error)
-        if "error occurred" not in final_engine_response_str.lower(): # Avoid double display
-             final_response_placeholder.markdown(final_engine_response_str)
+        # Display final response (use markdown for potential formatting)
+        final_response_placeholder.markdown(final_engine_response_str)
         full_assistant_response_for_history += final_engine_response_str
 
     st.session_state.chat_messages.append({"role": "assistant", "content": full_assistant_response_for_history})
