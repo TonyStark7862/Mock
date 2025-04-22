@@ -356,141 +356,209 @@ def abc_response(prompt_with_context):
 
 
 # Main application
+# Assumes all necessary imports and helper functions are defined above this function
+
 def main_app():
+    # --- Initial Setup ---
     st.set_page_config(page_title="RAG PDF Chat Pro", layout="wide")
-    init_feedback_csv()
+    init_feedback_csv() # Ensure feedback file is ready
 
-    if not check_login():
+    # --- Initialize Session State ---
+    # Ensure all necessary keys have default values
+    st.session_state.setdefault("logged_in", False)
+    st.session_state.setdefault("user_email", "Unknown")
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("processing_active", False) # Flag for ongoing processing
+    st.session_state.setdefault("initial_message_sent", False) # Flag for the first AI message
+    st.session_state.setdefault("retriever", None) # For FAISS
+    st.session_state.setdefault("faiss_cache_path", None) # For FAISS
+    st.session_state.setdefault("collection_name", None) # For Qdrant
+
+    # --- Login Check ---
+    if not check_login(): # Uses st.session_state.get("logged_in", False)
         show_login()
-        return
+        return # Stop execution if not logged in
 
-    st.title("Chat with PDF (Image/URL Integration + Download)") # Updated title slightly
+    # --- Main App UI ---
+    st.title("Chat with PDF (Image/URL Integration + Download)")
     st.sidebar.text(f"Logged in as: {st.session_state.user_email}")
 
-    # Logout and Contact Info Sidebar
+    # --- Sidebar Elements ---
     if st.sidebar.button("Logout"):
         logger.info(f"User logged out: {st.session_state.user_email}")
-        keys_to_keep = {'logged_in'} # Keep minimal state if needed
-        for key in list(st.session_state.keys()):
-             if key not in keys_to_keep: del st.session_state[key]
-        st.session_state.logged_in = False
-        # st.session_state.user_email = None # Clear email too if desired
-        st.rerun()
+        # Clear relevant session state keys upon logout
+        keys_to_clear = ["retriever", "faiss_cache_path", "collection_name", "messages",
+                         "processing_active", "initial_message_sent", "user_email"]
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.session_state.logged_in = False # Explicitly set logged_in to False
+        st.rerun() # Rerun to go back to login page
+
     st.sidebar.markdown("---")
     st.sidebar.header("Support")
-    st.sidebar.markdown("support@example.com")
+    st.sidebar.markdown("support@example.com") # Replace with actual support info
 
-    # PDF Upload and Processing Logic
+    # --- PDF Upload and Processing Trigger ---
     with st.sidebar:
         st.header("Upload PDF")
         uploaded_file = st.file_uploader("Choose PDF", type="pdf", key="pdf_uploader")
 
-        # Initialize session state variables
-        st.session_state.setdefault("messages", [])
-        st.session_state.setdefault("retriever", None) # For FAISS
-        st.session_state.setdefault("faiss_cache_path", None) # For FAISS
-        st.session_state.setdefault("collection_name", None) # For Qdrant
-
         if uploaded_file is not None:
-            # Process PDF if it's new or hasn't been processed this session
             file_bytes = uploaded_file.getvalue()
             file_hash = hashlib.md5(file_bytes).hexdigest()
             process_this_file = False
             target_collection_name = f"pdf_{file_hash}"
             target_faiss_cache = VECTORDB_DIR / f"{file_hash}.pkl"
 
+            # Determine if the current file needs processing
             if USE_FAISS:
                 if st.session_state.retriever is None or st.session_state.faiss_cache_path != str(target_faiss_cache):
                     process_this_file = True
-                    st.session_state.faiss_cache_path = str(target_faiss_cache)
             else: # Qdrant
-                if st.session_state.collection_name != target_collection_name:
+                if st.session_state.collection_name is None or st.session_state.collection_name != target_collection_name:
                     process_this_file = True
-                    st.session_state.collection_name = target_collection_name
 
-            if process_this_file:
-                logger.info(f"Processing new/changed file: {uploaded_file.name} (Hash: {file_hash})")
-                st.session_state.messages = [] # Clear messages for new file
-                try:
-                    if USE_FAISS:
-                        if target_faiss_cache.exists():
-                            with st.spinner(f"Loading cached data..."):
-                                logger.info(f"Loading FAISS from cache: {target_faiss_cache}")
-                                with open(target_faiss_cache, "rb") as f: vector_store = pickle.load(f)
-                                st.session_state.retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-                                st.success("✅ Loaded data from cache.")
-                        else:
-                             vector_store = process_pdf_faiss(file_bytes, file_hash)
-                             st.session_state.retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-                             logger.info(f"Saving FAISS cache: {target_faiss_cache}")
-                             with open(target_faiss_cache, "wb") as f: pickle.dump(vector_store, f)
-                             st.success("✅ PDF processed & cached (FAISS).")
-                    else: # Qdrant
-                         qdrant_client = setup_qdrant_client()
-                         model = load_sentence_transformer()
-                         if qdrant_client and model:
-                             vector_size = model.get_sentence_embedding_dimension()
-                             try: # Ensure collection exists
-                                 qdrant_client.get_collection(collection_name=st.session_state.collection_name)
-                             except Exception:
-                                 logger.info(f"Creating Qdrant collection: {st.session_state.collection_name}")
-                                 qdrant_client.create_collection(
-                                     collection_name=st.session_state.collection_name,
-                                     vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-                                 )
-                             # Call processing function which now checks for existing points too
-                             process_pdf_qdrant(file_bytes, st.session_state.collection_name)
-                             # Success message handled within process_pdf_qdrant now
-                         else: raise Exception("Qdrant client or embedding model not available.")
-                except Exception as e:
-                    logger.error(f"Fatal error processing file {uploaded_file.name}: {e}", exc_info=True)
-                    st.error(f"Error processing PDF: {e}")
-                    # Reset state on failure
-                    if USE_FAISS: st.session_state.retriever, st.session_state.faiss_cache_path = None, None
-                    else: st.session_state.collection_name = None
+            # --- Trigger Processing ---
+            # Only start if needed AND not already processing
+            if process_this_file and not st.session_state.processing_active:
+                logger.info(f"Triggering processing for file: {uploaded_file.name} (Hash: {file_hash})")
+                st.session_state.messages = [] # Clear chat for new file
+                st.session_state.processing_active = True # Set flag: processing starts
+                st.session_state.initial_message_sent = False # Reset flag for initial AI message
+                # Clear previous vector store state explicitly before starting new processing
+                st.session_state.retriever = None
+                st.session_state.faiss_cache_path = None
+                st.session_state.collection_name = None
+                st.rerun() # Rerun immediately to reflect the processing state (show spinners, disable chat)
+
+    # --- Processing Block ---
+    # This section executes only during the rerun triggered above if processing_active is True
+    if st.session_state.processing_active:
+        processing_successful = False # Track outcome
+        logger.info(f"Now actively processing file: {uploaded_file.name}")
+        try:
+            if USE_FAISS:
+                # --- FAISS Processing ---
+                if target_faiss_cache.exists():
+                    with st.spinner(f"Loading cached FAISS data..."):
+                        logger.info(f"Loading FAISS from cache: {target_faiss_cache}")
+                        with open(target_faiss_cache, "rb") as f: vector_store = pickle.load(f)
+                    # Set state immediately after successful loading
+                    st.session_state.retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+                    st.session_state.faiss_cache_path = str(target_faiss_cache) # Store path of loaded cache
+                    processing_successful = True
+                    st.success("✅ Loaded data from cache (FAISS).") # Show success feedback
+                else:
+                    # Process and cache
+                    with st.spinner("Processing PDF for FAISS..."): # Combined spinner
+                        vector_store = process_pdf_faiss(file_bytes, file_hash) # Assumes file_bytes is still available
+                    # Set state immediately after successful processing
+                    st.session_state.retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+                    st.session_state.faiss_cache_path = str(target_faiss_cache) # Store path of newly created cache
+                    logger.info(f"Saving FAISS cache: {target_faiss_cache}")
+                    with open(target_faiss_cache, "wb") as f: pickle.dump(vector_store, f)
+                    processing_successful = True
+                    st.success("✅ PDF processed & cached (FAISS).") # Show success feedback
             else:
-                logger.info(f"File '{uploaded_file.name}' already processed for session.")
+                # --- Qdrant Processing ---
+                qdrant_client = setup_qdrant_client() # Ensure client is ready
+                model = load_sentence_transformer() # Ensure model is ready
+                if qdrant_client and model:
+                    vector_size = model.get_sentence_embedding_dimension()
+                    collection_exists = False
+                    try:
+                        qdrant_client.get_collection(collection_name=target_collection_name)
+                        logger.info(f"Qdrant collection '{target_collection_name}' already exists.")
+                        collection_exists = True
+                    except Exception:
+                        logger.info(f"Creating Qdrant collection: {target_collection_name}")
+                        with st.spinner("Setting up vector database collection..."):
+                            qdrant_client.create_collection(
+                                collection_name=target_collection_name,
+                                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+                            )
+                        collection_exists = True # Created successfully
 
+                    if collection_exists:
+                         # process_pdf_qdrant includes spinners and success message inside
+                         # It also checks if points already exist and skips upload if so
+                         process_pdf_qdrant(file_bytes, target_collection_name)
+                         # If process_pdf_qdrant didn't raise an error, assume success
+                         # **CRITICAL:** Set collection name state *after* successful processing/check
+                         st.session_state.collection_name = target_collection_name
+                         processing_successful = True
+                    else:
+                        raise Exception("Failed to create or verify Qdrant collection.")
+                else:
+                    raise Exception("Qdrant client or embedding model not available for processing.")
 
-        if st.button("Clear Chat History"):
-            st.session_state.messages = []
-            logger.info(f"User {st.session_state.user_email} cleared chat")
-            st.rerun()
+            # --- Post-processing Actions (if successful) ---
+            if processing_successful:
+                logger.info(f"Processing successful for file hash {file_hash}. Ready state set.")
+                if not st.session_state.initial_message_sent:
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "I have read and understood your document. How can I help you?",
+                        "sources": []
+                    })
+                    st.session_state.initial_message_sent = True
+                    logger.info("Initial 'ready' message added to chat.")
 
+        except Exception as e:
+            # --- Handle Processing Failure ---
+            logger.error(f"Fatal error during file processing ({uploaded_file.name}): {e}", exc_info=True)
+            st.error(f"Error processing PDF: {e}")
+            # Explicitly reset state variables to ensure 'is_ready' becomes false
+            st.session_state.retriever = None
+            st.session_state.faiss_cache_path = None
+            st.session_state.collection_name = None
+            st.session_state.initial_message_sent = False # Reset flag on error
+            # Keep chat messages empty as they were cleared before processing started
 
-    # --- Load Resources (Cached) ---
+        finally:
+            # --- Mark Processing as Finished ---
+            # This block executes regardless of success or failure in try/except
+            st.session_state.processing_active = False
+            logger.info("Processing marked as inactive.")
+            st.rerun() # Rerun one final time to update UI (clear spinners, enable/disable chat based on outcome)
+
+    # --- Define Cached Resource Loaders ---
+    # These need to be defined within the app's scope for Streamlit caching
     @st.cache_resource
     def load_sentence_transformer():
         """Loads/downloads Sentence Transformer model."""
-        model_name = 'all-MiniLM-L6-v2' # Sticking to the one used by Qdrant path
+        # (Keep the implementation exactly as before)
+        model_name = 'all-MiniLM-L6-v2'
         try:
+            # Using with statement for spinner ensures it closes
             with st.spinner("Loading embedding model..."):
-                local_model_full_path = LOCAL_MODEL_PATH
-                if local_model_full_path.exists():
-                    model = SentenceTransformer(str(local_model_full_path))
-                    logger.info(f"Loaded embedding model from local path: {local_model_full_path}")
-                    return model
-                else:
-                    logger.warning(f"Downloading {model_name} to {local_model_full_path}...")
-                    model = SentenceTransformer(model_name)
-                    model.save(str(local_model_full_path))
-                    logger.info(f"Downloaded and saved model to {local_model_full_path}")
-                    return model
+                 local_model_full_path = LOCAL_MODEL_PATH
+                 if local_model_full_path.exists():
+                     model = SentenceTransformer(str(local_model_full_path))
+                     logger.info(f"Loaded embedding model from local path: {local_model_full_path}")
+                 else:
+                     logger.warning(f"Downloading {model_name} to {local_model_full_path}...")
+                     model = SentenceTransformer(model_name)
+                     model.save(str(local_model_full_path))
+                     logger.info(f"Downloaded and saved model to {local_model_full_path}")
+            return model # Return model after spinner closes
         except Exception as e:
             logger.error(f"Fatal: Could not load/download embedding model: {e}", exc_info=True)
             st.error(f"Fatal Error: Could not load embedding model: {e}")
-            st.stop()
+            st.stop() # Stop app if model fails
 
     @st.cache_resource
     def setup_qdrant_client():
         """Sets up Qdrant client."""
+        # (Keep the implementation exactly as before)
         try:
             qdrant_path = VECTORDB_DIR / "qdrant_db"
             logger.info(f"Setting up Qdrant client at: {qdrant_path}")
-            # Ensure the parent directory exists if Qdrant needs to create files/folders here
             qdrant_path.mkdir(parents=True, exist_ok=True)
-            client = QdrantClient(path=str(qdrant_path))
-            client.get_collections() # Verify connection by listing collections
+            # Adding timeout for potentially long operations
+            client = QdrantClient(path=str(qdrant_path), timeout=60)
+            client.get_collections() # Verify connection
             logger.info("Qdrant client setup verified.")
             return client
         except Exception as e:
@@ -498,210 +566,177 @@ def main_app():
             st.error(f"Fatal Error: Could not connect to Vector DB: {e}")
             st.stop() # Stop if DB connection fails
 
-    # Load resources needed for the current mode (FAISS or Qdrant)
-    if not USE_FAISS:
-        qdrant_client = setup_qdrant_client()
-        embedding_model = load_sentence_transformer()
-    # else: # Potentially load FAISS model if different and needed globally
-    #    if 'embeddings_model' not in globals(): # Avoid reloading if already loaded
-    #       embeddings_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+    # --- Determine Readiness for Chatting ---
+    # Check only if not currently processing
+    is_ready = False
+    if not st.session_state.processing_active:
+        if USE_FAISS:
+            is_ready = st.session_state.retriever is not None
+        else: # Qdrant
+            # Check if collection_name is set (means processing was successful)
+            is_ready = st.session_state.collection_name is not None
 
+    # --- Display Status Info / Warnings ---
+    if not is_ready and uploaded_file is not None and not st.session_state.processing_active:
+        # File uploaded, not processing, but not ready -> processing likely failed
+        st.warning("PDF processing may have failed. Please check logs or try re-uploading.")
+    elif not is_ready and uploaded_file is None and not st.session_state.processing_active:
+        # No file uploaded, not processing
+        st.info("Please upload a PDF file using the sidebar to begin chatting.")
 
-    # --- Display Chat Messages (with Response Parsing and Download Link) ---
+    # --- Display Chat History ---
+    # This loop renders messages stored in session state
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             if message["role"] == "user":
                 st.markdown(message["content"])
             elif message["role"] == "assistant":
                 response_content = message["content"]
+                # --- Assistant Message Rendering (Keep the detailed logic) ---
                 logger.debug(f"Rendering assistant message: {response_content[:100]}...")
-
-                # --- Response Parsing and Rendering Logic ---
                 last_end = 0
                 try:
-                    # Pattern to find [Image: path] markers
                     image_pattern = r'\[Image:\s*(.*?)\s*\]'
                     for match in re.finditer(image_pattern, response_content):
                         start, end = match.span()
-                        image_path_str = match.group(1).strip() # Extract the path string
-                        image_path = Path(image_path_str) # Convert to Path object
-
-                        # Display text segment before the image marker
+                        image_path_str = match.group(1).strip()
+                        image_path = Path(image_path_str)
+                        # Render text before image
                         if start > last_end:
-                            # Render markdown, allowing standard links
                             st.markdown(response_content[last_end:start], unsafe_allow_html=True)
-
-                        # Display the image and download link
-                        logger.debug(f"Found image marker, attempting to display: {image_path}")
+                        # Render image and download link
+                        logger.debug(f"Rendering image marker: {image_path}")
                         if image_path.is_file():
-                            # --- 1. Display the inline image ---
-                            # Using the original width=400. Change here if you want larger previews.
-                            st.image(str(image_path), width=400)
-
-                            # --- 2. ADDITION: Add Download Link ---
+                            st.image(str(image_path), width=400) # Inline image preview
+                            # Download link generation
                             try:
-                                # Get filename for the download attribute
                                 filename = image_path.name
-
-                                # Determine MIME type from file extension for Data URL
                                 ext = image_path.suffix.lstrip('.').lower()
                                 known_image_types = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'svg']
-                                if ext in known_image_types:
-                                    mime_type = f"image/{ext}"
-                                    if ext == 'svg': mime_type = 'image/svg+xml'
-                                else:
-                                    mime_type = 'application/octet-stream'
-                                    logger.warning(f"Unknown image extension '{ext}' for {filename}. Using generic MIME type.")
-
-                                # Read image bytes
-                                with open(image_path, "rb") as f:
-                                    img_bytes = f.read()
-                                # Encode to Base64
+                                mime_type = f"image/{ext}" if ext in known_image_types else 'application/octet-stream'
+                                if ext == 'svg': mime_type = 'image/svg+xml'
+                                with open(image_path, "rb") as f: img_bytes = f.read()
                                 b64_encoded = base64.b64encode(img_bytes).decode()
-                                # Create Data URL
                                 data_url = f"data:{mime_type};base64,{b64_encoded}"
-
-                                # Create and display the download link markdown
-                                link_text = "Download Image" # Customize link text if needed
-                                # Basic styling to look like a link
+                                link_text = "Download Image"
                                 link_html = f'<a href="{data_url}" download="{filename}" style="display: inline-block; margin-top: 5px; text-decoration: underline; color: #1E88E5; font-size: 0.9em;">{link_text}</a>'
                                 st.markdown(link_html, unsafe_allow_html=True)
-
                             except Exception as dl_err:
-                                # Log error specifically related to download link creation
                                 logger.error(f"Error creating download link for {image_path}: {dl_err}", exc_info=True)
                                 st.caption("_(Could not create download link)_")
-                            # --- END ADDITION ---
-
-                        elif image_path_str: # Check if path string is not empty but file not found
-                            st.error(f"Image not found at specified path: {image_path_str}")
+                        elif image_path_str:
+                            st.error(f"Image file not found: {image_path_str}")
                             logger.error(f"Render Error: Image file not found at {image_path_str}")
-                        else: # Handle case where marker might be empty like [Image: ]
-                            st.error("Invalid or empty image marker found in response.")
-                            logger.error("Render Error: Invalid image marker found.")
-
-                        last_end = end # Move position tracker to end of current marker
-
-                    # Display any remaining text after the last image marker
+                        else:
+                            st.error("Invalid image marker format.")
+                            logger.error("Render Error: Invalid image marker format.")
+                        last_end = end
+                    # Render remaining text after last image
                     if last_end < len(response_content):
                         st.markdown(response_content[last_end:], unsafe_allow_html=True)
-
                 except Exception as render_err:
-                    # This is the fallback if *any* error occurs during the parsing loop above
-                    logger.error(f"Error parsing/rendering assistant response: {render_err}", exc_info=True)
-                    # Fallback: display raw content if parsing fails, including the warning
-                    st.markdown(response_content, unsafe_allow_html=True)
-                    st.warning("Could not fully parse response for inline images.") # Keep the warning
-                # --- End of Response Parsing ---
+                    logger.error(f"Critical error parsing/rendering assistant response: {render_err}", exc_info=True)
+                    st.markdown(response_content, unsafe_allow_html=True) # Fallback display
+                    st.warning("Could not fully parse response for inline images/links.")
+                # --- End Assistant Message Rendering ---
 
+                # --- Sources Expander ---
+                if "sources" in message and message["sources"]:
+                     with st.expander("View Raw Sources Used"):
+                         for i, source in enumerate(message["sources"]):
+                             # (Keep the detailed source display logic as before)
+                             st.markdown(f"**Source Context {i+1} (Chunk ID: {source.get('chunk_id', 'N/A')}, Page: {source.get('page_num', 'Unknown')})**")
+                             st.markdown(f"> {source.get('text', '[No text found]')}")
+                             urls = source.get("urls", [])
+                             if urls: st.markdown(f"**URLs:** {', '.join(urls)}")
+                             images_in_source = source.get("images", [])
+                             if images_in_source:
+                                 st.markdown("**Associated Images (from source chunk):**")
+                                 cols = st.columns(min(len(images_in_source), 3))
+                                 for j, img_data in enumerate(images_in_source):
+                                     with cols[j % 3]:
+                                         st.markdown(f"_{img_data.get('filename', 'N/A')}_")
+                                         img_path_exp = img_data.get("path")
+                                         if img_path_exp: st.markdown(display_image(img_path_exp), unsafe_allow_html=True) # Uses helper for small preview
+                                         st.caption(f"Expl: {img_data.get('explanation', '')[:100]}...")
+                             st.divider()
 
-            # Display raw sources expander (still useful for debugging context)
-            if "sources" in message and message["sources"]:
-                with st.expander("View Raw Sources Used"):
-                    for i, source in enumerate(message["sources"]):
-                        st.markdown(f"**Source Context {i+1} (Chunk ID: {source.get('chunk_id', 'N/A')}, Page: {source.get('page_num', 'Unknown')})**")
-                        st.markdown(f"> {source.get('text', '[No text found]')}") # Added fallback text
-                        urls = source.get("urls", [])
-                        if urls: st.markdown(f"**URLs:** {', '.join(urls)}")
-                        images_in_source = source.get("images", []) # Renamed variable
-                        if images_in_source:
-                            st.markdown("**Associated Images (from source chunk):**")
-                            # Limit columns for expander view
-                            cols = st.columns(min(len(images_in_source), 3))
-                            for j, img_data in enumerate(images_in_source):
-                                with cols[j % 3]:
-                                    st.markdown(f"_{img_data.get('filename', 'N/A')}_")
-                                    img_path_exp = img_data.get("path")
-                                    # Use the display_image helper for small expander previews
-                                    if img_path_exp: st.markdown(display_image(img_path_exp), unsafe_allow_html=True)
-                                    st.caption(f"Expl: {img_data.get('explanation', '')[:100]}...")
-                        st.divider()
+    # --- Chat Input Area ---
+    # Determine disabled state and placeholder text
+    chat_disabled = st.session_state.processing_active or not is_ready
+    if st.session_state.processing_active:
+        prompt_placeholder = "Processing PDF, please wait..."
+    elif not is_ready:
+        prompt_placeholder = "Please upload a PDF to enable chat"
+    else:
+        prompt_placeholder = "Ask a question about your PDF"
 
-
-    # --- Chat Input Logic ---
-    if prompt := st.chat_input("Ask a question about your PDF"):
+    if prompt := st.chat_input(prompt_placeholder, disabled=chat_disabled):
+        # --- Handle User Query ---
+        # (This block only runs if chat is enabled and user types something)
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
+        with st.chat_message("user"):
+            st.markdown(prompt) # Display user message
 
-        current_file_name = uploaded_file.name if uploaded_file else "No file uploaded"
+        # --- Retrieval ---
+        current_file_name = uploaded_file.name if uploaded_file else "No file uploaded" # Get filename for logging
         retrieved_sources = []
-        context_for_llm = ""
-        is_ready = False
-        # Determine readiness based on the configured vector store mode
-        if USE_FAISS:
-            is_ready = st.session_state.retriever is not None
-        else: # Qdrant
-            is_ready = st.session_state.collection_name is not None and 'qdrant_client' in globals() and qdrant_client is not None
-
-        if not is_ready:
-            st.warning("Please upload and process a PDF file first.")
-            # Add message to history indicating not ready
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": "I cannot answer yet. Please upload and process a PDF.",
-                "sources": []
-            })
-            st.rerun() # Rerun to display the warning message immediately
-        else:
-            # --- Retrieval ---
-            with st.spinner("Searching relevant parts in PDF..."):
+        with st.spinner("Searching relevant parts in PDF..."):
+            try:
                 if USE_FAISS:
-                    try:
-                        docs = st.session_state.retriever.get_relevant_documents(prompt)
-                        for doc in docs:
-                            meta = doc.metadata if hasattr(doc, 'metadata') else {}
-                            # Combine text and metadata from FAISS doc
-                            retrieved_sources.append({"text": doc.page_content, **meta})
-                        logger.info(f"Retrieved {len(retrieved_sources)} chunks (FAISS)")
-                    except Exception as e:
-                        logger.error(f"FAISS retrieval error: {e}", exc_info=True)
-                        st.error(f"Error during FAISS retrieval: {e}")
-                        retrieved_sources = [] # Ensure sources list is empty on error
+                    if st.session_state.retriever:
+                         docs = st.session_state.retriever.get_relevant_documents(prompt)
+                         for doc in docs:
+                             meta = doc.metadata if hasattr(doc, 'metadata') else {}
+                             retrieved_sources.append({"text": doc.page_content, **meta})
+                         logger.info(f"Retrieved {len(retrieved_sources)} chunks (FAISS)")
+                    else:
+                         logger.error("FAISS retriever not available for search.") # Should not happen if is_ready is True
                 else: # Qdrant
-                    try:
-                        search_results = search_chunks(st.session_state.collection_name, prompt)
-                        for result in search_results:
-                            # Qdrant result payload should already contain the necessary info
-                            payload = result.payload if hasattr(result, 'payload') else {}
-                            # Ensure 'chunk_id' exists, fallback to result.id if needed
-                            payload_with_id = {**payload, "chunk_id": payload.get("chunk_id", result.id)}
-                            retrieved_sources.append(payload_with_id)
-                        logger.info(f"Retrieved {len(retrieved_sources)} chunks (Qdrant)")
-                    except Exception as e:
-                        logger.error(f"Qdrant retrieval error: {e}", exc_info=True)
-                        st.error(f"Error during Qdrant retrieval: {e}")
-                        retrieved_sources = [] # Ensure sources list is empty on error
+                    if st.session_state.collection_name:
+                         qdrant_client = setup_qdrant_client() # Get cached client
+                         if not qdrant_client: raise Exception("Qdrant client not available for search")
+                         # search_chunks loads model internally
+                         search_results = search_chunks(st.session_state.collection_name, prompt)
+                         for result in search_results:
+                             payload = result.payload if hasattr(result, 'payload') else {}
+                             payload_with_id = {**payload, "chunk_id": payload.get("chunk_id", result.id)}
+                             retrieved_sources.append(payload_with_id)
+                         logger.info(f"Retrieved {len(retrieved_sources)} chunks (Qdrant)")
+                    else:
+                         logger.error("Qdrant collection name not available for search.") # Should not happen if is_ready is True
+            except Exception as search_err:
+                 logger.error(f"Error during retrieval: {search_err}", exc_info=True)
+                 st.error(f"Error searching document: {search_err}")
+                 retrieved_sources = [] # Ensure empty sources on error
 
-            # --- Context/Prompt Prep & LLM Call ---
-            response = "" # Initialize response
-            sources_info_log = "N/A" # Initialize log info
+        # --- Context/Prompt Prep & LLM Call ---
+        response = ""
+        sources_info_log = "N/A"
+        if not retrieved_sources:
+            response = "I couldn't find specific information related to your query in the document based on my search."
+            sources_info_log = "No sources found"
+        else:
+            # Build context string (ensure paths are included)
+            context_items = []
+            sources_info_log_list = []
+            for i, src in enumerate(retrieved_sources):
+                item = f"Source {i+1} (Page:{src.get('page_num','N/A')}, Chunk:{src.get('chunk_id','N/A')}):\n"
+                item += f"Text: \"{src.get('text', '')}\"\n"
+                if src.get('urls'): item += f"URLs: {', '.join(src['urls'])}\n"
+                if src.get('images'):
+                    item += "Images:\n"
+                    for img in src['images']:
+                        # Pass the absolute path to the LLM context
+                        item += f" - Path: {img.get('path','N/A')} | Explanation: {img.get('explanation','N/A')}\n"
+                item += "---\n"
+                context_items.append(item)
+                sources_info_log_list.append(f"Chunk:{src.get('chunk_id','N/A')}|Pg:{src.get('page_num','N/A')}")
+            context_for_llm = "\n".join(context_items)
+            sources_info_log = "; ".join(sources_info_log_list)
 
-            if not retrieved_sources:
-                response = "I couldn't find specific information related to your query in the document."
-                sources_info_log = "No sources found"
-            else:
-                # Build context string for LLM (ensure absolute paths are included for images)
-                context_items = []
-                sources_info_log_list = []
-                for i, src in enumerate(retrieved_sources):
-                    item = f"Source {i+1} (Page:{src.get('page_num','N/A')}, Chunk:{src.get('chunk_id','N/A')}):\n"
-                    item += f"Text: \"{src.get('text', '')}\"\n"
-                    if src.get('urls'): item += f"URLs: {', '.join(src['urls'])}\n"
-                    if src.get('images'):
-                        item += "Images:\n"
-                        for img in src['images']:
-                            # CRITICAL: Make sure the 'path' here is the absolute path
-                            item += f" - Path: {img.get('path','N/A')} | Explanation: {img.get('explanation','N/A')}\n"
-                    item += "---\n"
-                    context_items.append(item)
-                    sources_info_log_list.append(f"Chunk:{src.get('chunk_id','N/A')}|Pg:{src.get('page_num','N/A')}")
-
-                context_for_llm = "\n".join(context_items)
-                sources_info_log = "; ".join(sources_info_log_list)
-
-                # Define the comprehensive prompt for the LLM
-                # (Ensure instructions for [Image: path] format are clear)
-                full_prompt = f"""You are an AI assistant analyzing a PDF based ONLY on the provided context chunks.
+            # Define the full prompt for the LLM
+            full_prompt = f"""You are an AI assistant analyzing a PDF based ONLY on the provided context chunks.
 Answer the user's question accurately using information solely from the context.
 Integrate relevant details directly into your response:
 - **URLs:** If a URL from the context supports your point, include it in Markdown: [descriptive text](URL).
@@ -717,33 +752,45 @@ Question: {prompt}
 
 Answer:"""
 
-                # Get response from LLM (Placeholder)
-                with st.spinner("Generating response..."):
-                    try:
-                        # Using the placeholder 'abc_response'
-                        response = abc_response(full_prompt) # This returns the raw string
-                        logger.info("Received response from placeholder LLM.")
-                    except Exception as e:
-                        logger.error(f"LLM placeholder error: {e}", exc_info=True)
-                        response = f"Sorry, an error occurred while generating the response: {str(e)}"
+            # Get response from LLM (Placeholder)
+            with st.spinner("Generating response..."):
+                try:
+                    response = abc_response(full_prompt) # Using placeholder
+                    logger.info("Received response from placeholder LLM.")
+                except Exception as e:
+                    logger.error(f"LLM placeholder error: {e}", exc_info=True)
+                    response = f"Sorry, an error occurred while generating the response: {str(e)}"
 
-            # --- Add Message to History (Raw response stored) ---
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": response, # Store the raw response string from LLM
-                "sources": retrieved_sources # Store raw sources for expander
-            })
+        # --- Add Assistant Message to History ---
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": response,
+            "sources": retrieved_sources # Store sources for expander
+        })
 
-            # --- Log Feedback ---
-            logger.info(f"Logging feedback for prompt: {prompt}")
-            # Ensure response logged is the potentially long raw response
-            response_for_log = response.replace('\n', '\\n').replace('\r', '')
-            log_feedback(st.session_state.user_email, prompt, current_file_name, response_for_log, sources_info_log)
+        # --- Log Feedback ---
+        logger.info(f"Logging feedback for prompt: {prompt}")
+        response_for_log = response.replace('\n', '\\n').replace('\r', '')
+        log_feedback(st.session_state.user_email, prompt, current_file_name, response_for_log, sources_info_log)
 
-            # --- Trigger Re-run to Display New Message ---
-            # The display loop at the top handles parsing/rendering
-            st.rerun()
+        # --- Trigger Re-run to Display New Assistant Message ---
+        st.rerun()
 
+# --- Entry point ---
+# Keep the if __name__ == "__main__": block exactly as before
+# if __name__ == "__main__":
+#     try:
+#         logger.info(f"Starting application from main block. BASE_PATH: {BASE_PATH}")
+#         main_app()
+#     except (SystemExit, KeyboardInterrupt) as exit_exception:
+#          logger.info(f"Application stopped gracefully ({type(exit_exception).__name__}).")
+#     except Exception as e:
+#          logger.critical(f"Application crashed critically: {e}", exc_info=True)
+#          try: st.error(f"A critical error occurred: {e}")
+#          except: pass
+
+
+            # 
 # Run the main function
 if __name__ == "__main__":
     try:
