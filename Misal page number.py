@@ -48,3 +48,75 @@ def search_chunks(collection_name, query, limit=5):
         logger.error(f"Error searching chunks in {collection_name}: {e}", exc_info=True)
         st.error(f"Error searching chunks: {e}")
         return []
+
+
+
+import logging # Ensure logger is available
+
+# Assume logger is configured elsewhere as logger = logging.getLogger(...)
+# Assume RecursiveCharacterTextSplitter is imported
+
+logger = logging.getLogger("rag_pdf_chat") # Using the logger name from your original code
+
+# --- Modified Create Enhanced Chunks Function ---
+
+def create_enhanced_chunks(pages_content, chunk_size=1000, chunk_overlap=200):
+    """
+    Create text chunks with metadata (page_label, images[path,expl], urls).
+    Handles pages with only images by creating a placeholder chunk using the
+    first image's explanation as its text content.
+    """
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    enhanced_chunks = []
+    current_chunk_id = 0 # Initialize chunk ID counter
+
+    for page_data in pages_content:
+        page_text = page_data.get("text", "") # Get text, default to empty string
+        page_images = page_data.get("images", []) # Get images list
+        page_label = page_data.get("page_label", "Unknown") # Get page label
+        page_urls = page_data.get("urls", []) # Get URLs
+
+        # Attempt to split the text from the page
+        text_chunks = text_splitter.split_text(page_text)
+
+        # --- START MINIMAL CHANGE LOGIC ---
+        # Check if text splitting yielded no chunks BUT there are images on the page
+        if not text_chunks and page_images:
+            logger.info(f"Page '{page_label}' has no text but contains {len(page_images)} image(s). Creating placeholder chunk.")
+
+            # Use the explanation of the first image as representative text content
+            # Add context to make the placeholder text more meaningful
+            first_image_explanation = page_images[0].get("explanation", "[Image Explanation Unavailable]")
+            placeholder_text = (
+                f"Content for page '{page_label}' consists primarily of image(s). "
+                f"Description of the first image: {first_image_explanation}"
+            )
+
+            # Create a single placeholder chunk for this image-only page
+            enhanced_chunk = {
+                "chunk_id": current_chunk_id,
+                "text": placeholder_text, # Use the generated placeholder text
+                "page_label": page_label,
+                "urls": page_urls, # Include URLs if any were found on the page
+                "images": page_images # Attach metadata for ALL images on the page
+            }
+            enhanced_chunks.append(enhanced_chunk)
+            current_chunk_id += 1 # Increment chunk ID
+
+        # --- ELSE: Process normally if text chunks were found ---
+        else:
+            # Original logic: Create chunks from the actual text found
+            for chunk_text in text_chunks:
+                enhanced_chunk = {
+                    "chunk_id": current_chunk_id,
+                    "text": chunk_text, # Use the actual text chunk
+                    "page_label": page_label,
+                    "urls": page_urls,
+                    "images": page_images # Attach metadata for ALL images on the page
+                }
+                enhanced_chunks.append(enhanced_chunk)
+                current_chunk_id += 1 # Increment chunk ID
+        # --- END MINIMAL CHANGE LOGIC ---
+
+    logger.info(f"Created {len(enhanced_chunks)} enhanced chunks (including placeholders if any)")
+    return enhanced_chunks
