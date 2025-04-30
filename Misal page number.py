@@ -60,32 +60,40 @@ logger = logging.getLogger("rag_pdf_chat") # Using the logger name from your ori
 
 # --- Modified Create Enhanced Chunks Function ---
 
+import logging # Ensure logger is available
+from langchain.text_splitter import RecursiveCharacterTextSplitter # Ensure splitter is imported
+
+# Assume logger is configured elsewhere as logger = logging.getLogger(...)
+logger = logging.getLogger("rag_pdf_chat") # Using the logger name from your original code
+
+# --- Corrected Create Enhanced Chunks Function ---
+
 def create_enhanced_chunks(pages_content, chunk_size=1000, chunk_overlap=200):
     """
     Create text chunks with metadata (page_label, images[path,expl], urls).
     Handles pages with only images by creating a placeholder chunk using the
     first image's explanation as its text content.
+    Uses 'page_label' consistently for metadata key.
     """
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     enhanced_chunks = []
     current_chunk_id = 0 # Initialize chunk ID counter
 
     for page_data in pages_content:
-        page_text = page_data.get("text", "") # Get text, default to empty string
-        page_images = page_data.get("images", []) # Get images list
-        page_label = page_data.get("page_label", "Unknown") # Get page label
-        page_urls = page_data.get("urls", []) # Get URLs
+        # Use .get() for safety, providing default values
+        page_text = page_data.get("text", "")
+        page_images = page_data.get("images", [])
+        page_label = page_data.get("page_label", "Unknown") # <-- Read 'page_label'
+        page_urls = page_data.get("urls", [])
 
         # Attempt to split the text from the page
         text_chunks = text_splitter.split_text(page_text)
 
-        # --- START MINIMAL CHANGE LOGIC ---
-        # Check if text splitting yielded no chunks BUT there are images on the page
+        # --- Handling for Image-Only Pages (or pages with no extractable text) ---
         if not text_chunks and page_images:
             logger.info(f"Page '{page_label}' has no text but contains {len(page_images)} image(s). Creating placeholder chunk.")
 
             # Use the explanation of the first image as representative text content
-            # Add context to make the placeholder text more meaningful
             first_image_explanation = page_images[0].get("explanation", "[Image Explanation Unavailable]")
             placeholder_text = (
                 f"Content for page '{page_label}' consists primarily of image(s). "
@@ -95,28 +103,31 @@ def create_enhanced_chunks(pages_content, chunk_size=1000, chunk_overlap=200):
             # Create a single placeholder chunk for this image-only page
             enhanced_chunk = {
                 "chunk_id": current_chunk_id,
-                "text": placeholder_text, # Use the generated placeholder text
-                "page_label": page_label,
-                "urls": page_urls, # Include URLs if any were found on the page
+                "text": placeholder_text,
+                "page_label": page_label, # <-- Store 'page_label'
+                "urls": page_urls,
                 "images": page_images # Attach metadata for ALL images on the page
             }
             enhanced_chunks.append(enhanced_chunk)
             current_chunk_id += 1 # Increment chunk ID
 
-        # --- ELSE: Process normally if text chunks were found ---
+        # --- Handling for Pages WITH Text ---
         else:
             # Original logic: Create chunks from the actual text found
             for chunk_text in text_chunks:
+                # Skip creating chunks if chunk_text is empty or whitespace only (optional robustness)
+                if not chunk_text or chunk_text.isspace():
+                    continue
+
                 enhanced_chunk = {
                     "chunk_id": current_chunk_id,
-                    "text": chunk_text, # Use the actual text chunk
-                    "page_label": page_label,
+                    "text": chunk_text,
+                    "page_label": page_label, # <-- Store 'page_label'
                     "urls": page_urls,
                     "images": page_images # Attach metadata for ALL images on the page
                 }
                 enhanced_chunks.append(enhanced_chunk)
                 current_chunk_id += 1 # Increment chunk ID
-        # --- END MINIMAL CHANGE LOGIC ---
 
     logger.info(f"Created {len(enhanced_chunks)} enhanced chunks (including placeholders if any)")
     return enhanced_chunks
